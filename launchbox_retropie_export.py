@@ -2,65 +2,44 @@ import glob
 import io
 import os
 import configparser
+import re
+import json
 from shutil import copy
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
-config = configparser.RawConfigParser()
-config.read('config.cfg')
-platforms_dict = dict(config.items('Platforms'))
+config = configparser.RawConfigParser(converters={'list': lambda x: [i.strip() for i in x.split(',')]})
+config.read("config.ini")
 
 # version 1.2.0
 # The path to your Launchbox folder.
-lb_dir = r"E:\LaunchBox"
+lb_dir = config["Paths"]["LaunchboxDirectory"]
 
-# Where to put the exported roms, images and xmls
-# Copy the gamelist, roms and images to /home/<user>/RetroPie/roms. Gamelists are now saved inside each platform dir.
-output_dir = r"E:\LaunchBox\Rom Export"
+# Where to put the exported images and xmls
+output_dir = config["Paths"]["OutputDirectory"]
+
+# Where EmulationStation is installed
+es_dir = config["Paths"]["EmulationStationDirectory"]
+roms_dir = config["Paths"]["ROMsDirectory"]
 
 # Restrict export to only Launchbox Favorites
-favorites_only = False
+favorites_only = config["Filters"].getboolean("FavoritesOnly")
 
-# Retropie running on an old Pi needs small images. Images with a height or width above 500 pixels will be reduced with their aspect ratio preserved. If generating for Onion OS the images will be 250 px.
-reduce_image_size = False
+platforms = config["Filters"].getlist("Platforms")
 
-# Choose platforms (comment/uncomment as needed)
-# The first string in each pair is the Launchbox platform filename, the second is the output platform folder name
-platforms = dict()
-# platforms["Atari 2600"] = "atari2600"
-# platforms["Atari 7800"] = "atari7800"
-# platforms["Atari Lynx"] = "atarilynx"
-# platforms["Nintendo 64"] = "n64"
-# platforms["Nintendo Famicom Disk System"] = "fds"
-# platforms["Nintendo Game & Watch"] = "gw"
-# platforms["Nintendo Game Boy"] = "gb"
-# platforms["Nintendo Game Boy Color"] = "gbc"
-# platforms["Nintendo Game Boy Advance"] = "gba"
-# platforms["Nintendo NES"] = "nes"
-# platforms["Super Nintendo Entertainment System"] = "snes"
-# platforms["Nintendo GameCube"] = "gc"
-# platforms["Nintendo Switch"] = "switch"
-platforms["Nintendo Wii"] = "wii"
-# platforms["Nintendo DS"] = "nds"
-# platforms["Nintendo 3DS"] = "n3ds"
-# platforms["Sega 32x"] = "sega32x"
-# platforms["Sega Game Gear"] = "gamegear"
-# platforms["Sega CD"] = "segacd"
-# platforms["Sega Genesis"] = "genesis"
-# platforms["Sega Mega Drive"] = "megadrive"
-# platforms["Sega Master System"] = "mastersystem"
-# platforms["Sega Saturn"] = "saturn"
-# platforms["Sega Dreamcast"] = "dreamcast"
-# platforms["Sega SG-1000"] = "sg-1000"
-# platforms["SNK Neo Geo AES"] = "neogeo"
-# platforms["SNK Neo Geo Pocket Color"] = "ngpc"
-# platforms["Sony Playstation"] = "psx"
-# platforms["Sony Playstation 2"] = "ps2"
-# platforms["Sony Playstation 3"] = "ps3"
-# platforms["Sony PSP"] = "psp"
-# platforms["TurboGrafx-16"] = "pcengine"
-# platforms["WonderSwan Color"] = "wonderswancolor"
+overwrite_image_types = config["MediaOptions"].getlist("OverwriteImageTypes")
 
+overwrite_fields = config["GamelistOptions"].getlist("OverwriteFields")
+should_merge_with_emulation_station = config["GamelistOptions"]["MergeWithEnulationStation"]
+
+# The first string in each pair is the EmulationStation platform folder name,
+# the second is the Launchbox platform folder name
+PLATFORMS_MAP = {}
+with open('platforms.json', encoding='utf-8') as f:
+    PLATFORMS_MAP = json.load(f)
+    f.close()
+
+DISC_PLATFORM = ["dreamcast", "fds", "gc", "megacd", "neogeocd", "ps2", "ps3", "ps4", "psp", "psx", "saturn", "saturnjp", "segacd", "steam", "wii", "wiiu"]
 
 ### edits should not be required below here ###
 
@@ -68,41 +47,42 @@ processed_games = 0
 processed_platforms = 0
 media_copied = 0
 
-for platform in platforms.keys():
-    platform_lb = platform
-    platform_rp = platforms[platform]
-    lb_platform_xml = r"%s\Data\Platforms\%s.xml" % (lb_dir, platform_lb)
-    lb_image_dir = r"%s\images\%s\Box - Front" % (lb_dir, platform_lb)
-    lb_3dbox_dir = r"%s\images\%s\Box - 3D" % (lb_dir, platform_lb)
-    lb_backcover_dir = r"%s\images\%s\Box - Back" % (lb_dir, platform_lb)
-    lb_cover_dir = r"%s\images\%s\Box - Front" % (lb_dir, platform_lb)
-    lb_fanart_dir = r"%s\images\%s\Fanart - Background" % (lb_dir, platform_lb)
-    lb_wheel_dir = r"%s\images\%s\Clear Logo" % (lb_dir, platform_lb)
-    # lb_physicalmedia_dir = r"%s\images\%s\Cart - Front" % (lb_dir, platform_lb)
-    lb_physicalmedia_dir = r"%s\images\%s\Disc" % (lb_dir, platform_lb)
-    lb_screenshot_dir = r"%s\images\%s\Screenshot - Gameplay" % (lb_dir, platform_lb)
-    lb_video_dir = r"%s\videos\%s" % (lb_dir, platform_lb)
-    output_roms = r"%s\roms" % output_dir
-    output_roms_platform = r"%s\%s" % (output_roms, platform_rp)
-    output_gamelists = r"%s\gamelists" % output_dir
-    output_gamelists_platform = r"%s\%s" % (output_gamelists, platform_rp)
-    output_image_dir = r"%s\images" % output_roms_platform
-    output_3dbox_dir = r"%s\3dboxes" % output_roms_platform
-    output_backcover_dir = r"%s\backcovers" % output_roms_platform
-    output_cover_dir = r"%s\covers" % output_roms_platform
-    output_fanart_dir = r"%s\fanart" % output_roms_platform
-    output_marquee_dir = r"%s\marquees" % output_roms_platform
-    output_screenshots_dir = r"%s\screenshots" % output_roms_platform
-    output_video_dir = r"%s\videos" % output_roms_platform
+for platform_rp in platforms:
+    platform_lb = PLATFORMS_MAP[platform_rp]
+    lb_platform_xml = fr"{lb_dir}\Data\Platforms\{platform_lb}.xml"
+    lb_image_dir = fr"{lb_dir}\Images\{platform_lb}\Box - Front"
+    lb_3dbox_dir = fr"{lb_dir}\Images\{platform_lb}\Box - 3D"
+    lb_backcover_dir = fr"{lb_dir}\Images\{platform_lb}\Box - Back"
+    lb_fanart_dir = fr"{lb_dir}\Images\{platform_lb}\Fanart - Background"
+    lb_wheel_dir = fr"{lb_dir}\Images\{platform_lb}\Clear Logo"
+    lb_physicalmedia_dir = fr"{lb_dir}\Images\{platform_lb}\Disc" if platform_rp in DISC_PLATFORM else fr"{lb_dir}\Images\{platform_lb}\Cart - Front"
+    if platform_rp == "steam":
+        lb_cover_dir = fr"{lb_dir}\Images\{platform_lb}\Steam Poster"
+        lb_screenshot_dir = fr"{lb_dir}\Images\{platform_lb}\Steam Screenshot"
+    else:
+        lb_cover_dir = fr"{lb_dir}\Images\{platform_lb}\Box - Front"
+        lb_screenshot_dir = fr"{lb_dir}\Images\{platform_lb}\Screenshot - Gameplay"
+    lb_titlescreens_dir = fr"{lb_dir}\Images\{platform_lb}\Screenshot - Game Title"
+    lb_video_dir = fr"{lb_dir}\Videos\{platform_lb}"
+    output_media_platform = fr"{output_dir}\downloaded_media\{platform_rp}"
+    output_gamelists_platform = fr"{output_dir}\gamelists\{platform_rp}"
+    output_3dbox_dir = fr"{output_media_platform}\3dboxes"
+    output_backcover_dir = fr"{output_media_platform}\backcovers"
+    output_cover_dir = fr"{output_media_platform}\covers"
+    output_fanart_dir = fr"{output_media_platform}\fanart"
+    output_marquee_dir = fr"{output_media_platform}\marquees"
+    output_screenshots_dir = fr"{output_media_platform}\screenshots"
+    output_titlescreens_dir = fr"{output_media_platform}\titlescreens"
+    output_video_dir = fr"{output_media_platform}\videos"
 
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
 
-    if not os.path.isdir(output_roms):
-        os.makedirs(output_roms)
+    if not os.path.isdir(output_media_platform):
+        os.makedirs(output_media_platform)
 
-    if not os.path.isdir(output_roms_platform):
-        os.makedirs(output_roms_platform)
+    if not os.path.isdir(output_gamelists_platform):
+        os.makedirs(output_gamelists_platform)
 
     xmltree = ET.parse(lb_platform_xml)
     games_found = []
@@ -113,6 +93,7 @@ for platform in platforms.keys():
     images_marquee = []
     images_physicalmedia = []
     images_screenshots = []
+    images_titlescreens = []
     videos = []
     images = []
 
@@ -166,36 +147,49 @@ for platform in platforms.keys():
             "lb_media_dir": lb_screenshot_dir,
             "lb_media_files": images_screenshots,
         },
+        {
+            "type": "titlescreen",
+            "xmltag": None,
+            "output_dir": "titlescreens",
+            "lb_media_dir": lb_titlescreens_dir,
+            "lb_media_files": images_titlescreens,
+        },
     ]
 
     for image_map in image_maps:
-        for fname in glob.glob(r"%s\**" % image_map["lb_media_dir"], recursive=True):
+        for fname in glob.glob(fr"{image_map['lb_media_dir']}\**", recursive=True):
             img_path = os.path.join(image_map["lb_media_dir"], fname)
             if not os.path.isdir(img_path):
                 image_map["lb_media_files"].append(img_path)
 
     def get_image(game_name, image_files):
-        game_name = game_name.replace(":", "_")
-        game_name = game_name.replace("'", "_")
-        game_name = game_name.replace("/", "_")
-        game_name = game_name.replace("*", "_")
+        name = game_name.replace(":", "_").replace("'", "_").replace("/", "_").replace("*", "_")
         for image_path in image_files:
             image_name = os.path.basename(r"%s" % image_path)
             if (
-                image_name.startswith(game_name + "-01.")
-                or image_name.lower() == game_name.lower() + ".mp4"
+                image_name.startswith(name + "-01.")
+                or image_name.startswith(name + "-02.")
+                or image_name.lower() == name.lower() + ".mp4"
             ):
                 return [image_name, image_path]
 
-    def save_image(original_path, output_dir, rom_path):
+    def is_image_existed(output_dir, rom_filename):
+        name = glob.escape(rom_filename)
+        output_path = os.path.join(output_dir, name)
+        result = glob.glob(fr"{output_path}.*")
+        # output_path = glob.escape(output_path)
+        return result
+
+    def save_image(original_path, output_dir, rom_filename):
         if not os.path.isdir(output_dir):
             os.mkdir(output_dir)
 
-        filename = os.path.basename(r"%s" % rom_path)
         extension = os.path.splitext(original_path)[1]
-        if extension == ".jpg" and "fanart" not in output_dir:
+        if "fanart" in output_dir:
+            extension = ".jpg"
+        elif "video" not in output_dir:
             extension = ".png"
-        filename = os.path.splitext(filename)[0] + extension
+        filename = rom_filename + extension
 
         output_path = os.path.join(output_dir, filename)
         copy(r"%s" % original_path, r"%s" % output_path)
@@ -204,75 +198,153 @@ for platform in platforms.keys():
     for game in xmltree.getroot().iter("Game"):
         this_game = dict()
         try:
-            favorite_element = game.find("Favorite")
-            if (favorites_only is False) or (
-                favorites_only is True
-                and favorite_element is not None
-                and favorite_element.text == "true"
-            ):
-                print("%s: %s" % (platform_lb, game.find("Title").text))
-                rom_path = game.find("ApplicationPath").text
-                this_game["path"] = "./" + os.path.basename(
-                    r"%s" % game.find("ApplicationPath").text
+            game_name = game.find('Title').text
+            print(f"{platform_lb}: {game_name}")
+            if platform_rp == "steam":
+                if game.find('Source').text != "Steam":
+                    continue
+                rom_filename = game_name.replace(":", "").replace("'", "").replace("/", "").replace("*", "")
+                rom_path = fr'./{rom_filename}.url'
+            else:
+                rom_path = "./" + os.path.basename(game.find("ApplicationPath").text)
+                rom_filename = os.path.splitext(os.path.basename(rom_path))[0]
+            this_game["path"] = rom_path
+            this_game["name"] = game_name
+            if not game.find("Notes") is None:
+                this_game["desc"] = game.find("Notes").text
+            for image_map in image_maps:
+                image_info = get_image(this_game["name"], image_map["lb_media_files"])
+
+                if image_info is None:
+                    print(f'\tNo {image_map["type"]} found for {this_game["name"]}')
+                    if image_map["xmltag"] is not None:
+                        this_game[image_map["xmltag"]] = ""
+                    continue
+
+                image_file = image_info[0]
+                image_path = image_info[1]
+
+                if image_map["output_dir"] not in overwrite_image_types and is_image_existed(
+                    output_media_platform + os.sep + image_map["output_dir"],
+                    rom_filename,
+                ):
+                    print(f'\t{image_map["type"]} already existed for {this_game["name"]}')
+                    continue
+
+                new_image_filename = save_image(
+                    image_path,
+                    output_media_platform + os.sep + image_map["output_dir"],
+                    rom_filename,
                 )
-                this_game["name"] = game.find("Title").text
-                if not game.find("Notes") is None:
-                    this_game["desc"] = game.find("Notes").text
-                for image_map in image_maps:
-                    image_info = get_image(
-                        this_game["name"], image_map["lb_media_files"]
+                if image_map["xmltag"] is not None:
+                    this_game[image_map["xmltag"]] = (
+                        "./" + image_map["output_dir"] + "/" + new_image_filename
                     )
-
-                    if image_info is None:
-                        print(f'\tNo {image_map["type"]} found for {this_game["name"]}')
-                        if (image_map["xmltag"] is not None):
-                            this_game[image_map["xmltag"]] = ""
-                        continue
-
-                    image_file = image_info[0]
-                    image_path = image_info[1]
-                    new_image_filename = save_image(
-                        image_path,
-                        output_roms_platform + os.sep + image_map["output_dir"],
-                        rom_path,
-                    )
-                    if (image_map["xmltag"] is not None):
-                        this_game[image_map["xmltag"]] = (
-                            "./" + image_map["output_dir"] + "/" + new_image_filename
-                        )
-                    media_copied += 1
-                if not game.find("CommunityStarRating") is None:
-                    this_game["rating"] = str(
-                        (round(float(game.find("CommunityStarRating").text) * 2 / 10, 1))
-                    )
-                if not game.find("ReleaseDate") is None:
-                    this_game["releasedate"] = (
-                        game.find("ReleaseDate").text.replace("-", "").split("T")[0]
-                        + "T000000"
-                    )
-                if not game.find("Developer") is None:
-                    this_game["developer"] = game.find("Developer").text
-                if not game.find("Publisher") is None:
-                    this_game["publisher"] = game.find("Publisher").text
-                if not game.find("Genre") is None:
-                    this_game["genre"] = game.find("Genre").text
-                if not game.find("MaxPlayers") is None:
-                    max_players = game.find("MaxPlayers").text
-                    if max_players == "1":
-                        this_game["players"] = "1"
-                    elif max_players == "0":
-                        this_game["players"] = "1+"
-                    else:
-                        this_game["players"] = "1-" + max_players
-                games_found.append(this_game)
-                # copy(rom_path, output_roms_platform)
-                # copy(os.path.join(lb_dir, rom_path), output_roms_platform)
-                processed_games += 1
+                media_copied += 1
+            if game.find("CommunityStarRating") is not None:
+                this_game["rating"] = str(
+                    (round(float(game.find("CommunityStarRating").text) * 2 / 10, 1))
+                )
+            if game.find("ReleaseDate") is not None:
+                this_game["releasedate"] = (
+                    game.find("ReleaseDate").text.replace("-", "").split("T")[0]
+                    + "T000000"
+                )
+            if game.find("Developer") is not None:
+                this_game["developer"] = game.find("Developer").text
+            if game.find("Publisher") is not None:
+                this_game["publisher"] = game.find("Publisher").text
+            if game.find("Genre") is not None:
+                this_game["genre"] = game.find("Genre").text
+            if game.find("MaxPlayers") is not None:
+                max_players = game.find("MaxPlayers").text
+                if max_players == "1":
+                    this_game["players"] = "1"
+                elif max_players == "0":
+                    this_game["players"] = "1+"
+                else:
+                    this_game["players"] = "1-" + max_players
+            if game.find("SortTitle") is not None:
+                this_game["sortname"] = game.find("SortTitle").text
+            games_found.append(this_game)
+            # copy(rom_path, output_roms_platform)
+            # copy(os.path.join(lb_dir, rom_path), output_roms_platform)
+            processed_games += 1
         except Exception as e:
             print(e)
 
+    if should_merge_with_emulation_station is False:
+        alternative_emulator_element = None
+        games_output = games_found
+    else:
+        ##--Start merge gamelist--##
+        source_root = ET.Element("gameList")
+        alternative_emulator_element = None
+        games_output = []
+        try:
+            with open(fr"{es_dir}\.emulationstation\gamelists\{platform_rp}\gamelist.xml", encoding="utf-8") as f:
+                xml = f.read()
+            doc = ET.fromstring(re.sub(r"(<\?xml[^>]+\?>)", r"\1<root>", xml) + "</root>")
+            source_root = doc.find("gameList")
+            alternative_emulator_element = doc.find("alternativeEmulator")
+        except ET.ParseError as e:
+            print(e)
+            print("gamelist.xml not existed.")
+
+        for game in source_root.iter("game"):
+            game_dict = dict()
+            for item in list(game):
+                game_dict[item.tag] = item.text
+            rom_path = repr(game_dict["path"])
+
+            filename = os.path.splitext(os.path.basename(r"%s" % rom_path))[0]
+            filename = glob.escape(filename)
+            if not glob.glob(fr"{roms_dir}\{platform_rp}\{filename}.*"):
+                print(f"No game found at {rom_path}")
+                continue
+
+            matched_game_dict = next((x for x in games_found if repr(x["path"]) == rom_path), None)
+
+            if matched_game_dict is None:
+                games_output.append(game_dict)
+                continue
+
+            def update_element(tag):
+                overwrite = tag in overwrite_fields
+                if matched_game_dict.get(tag) is None:
+                    return
+                value = matched_game_dict[tag]
+
+                if overwrite is False and game_dict.get(tag) is not None:
+                    return
+
+                game_dict[tag] = value
+                return
+
+            update_element("rating")
+            update_element("players")
+            update_element("genre")
+            update_element("releasedate")
+            update_element("developer")
+            update_element("publisher")
+            update_element("desc")
+            update_element("sortname")
+
+            games_output.append(game_dict)
+
+        for game_dict in games_found:
+            rom_path = repr(game_dict["path"])
+
+            matched_games = source_root.findall(f'./game/[path={rom_path}]')
+
+            if len(matched_games) == 0:
+                games_output.append(game_dict)
+                continue
+        ##--End merge gamelist--##
+
+    games_output.sort(key=lambda i: i["path"])
     top = ET.Element("gameList")
-    for game in games_found:
+    for game in games_output:
         child = ET.SubElement(top, "game")
         for key in game.keys():
             child_content = ET.SubElement(child, key)
@@ -280,14 +352,17 @@ for platform in platforms.keys():
 
     try:
         xmlstr = minidom.parseString(ET.tostring(top)).toprettyxml()
-        gamelist_xml = "gamelist.xml"
-        this_output_xml_filename = output_roms_platform + os.sep + gamelist_xml
+        if alternative_emulator_element is not None:
+            add_element = ET.tostring(alternative_emulator_element).decode()
+            add_element = r"\n" + add_element.removesuffix("\n")
+            xmlstr = re.sub(r"(<\?xml[^>]+\?>)", fr"\1{add_element}", xmlstr)
+        this_output_xml_filename = output_gamelists_platform + os.sep + "gamelist.xml"
         with io.open(this_output_xml_filename, "w", encoding="utf-8") as f:
             f.write(xmlstr)
         processed_platforms += 1
     except Exception as e:
         print(e)
-        print(f"\tERROR writing gamelist XML for {platform}")
+        print(f"\tERROR writing gamelist XML for {platform_lb}")
 
 
 print("----------------------------------------------------------------------")
